@@ -1,9 +1,10 @@
 # 📚 DDoS Attack Graph Demo - 專案完整文檔
 
-> **最後更新**: 2025/9/9 上午9:27
+> **最後更新**: 2025/9/9 
+> **專案類型**: 純後端 API 服務
 > **整合狀態**: 已整合所有外層文檔，統一管理  
 > **維護策略**: 所有更新和記錄直接在此檔案中維護
-> **最新補充**: ✅ 新增 Cloudflare Logs HTTP Requests 數據集文檔 (含 WAFAttackScore)
+> **最新變更**: ✅ 專案已重構為純後端架構，前端部分已移除
 
 ## 📋 文檔目錄
 
@@ -28,7 +29,9 @@
 
 # 專案概述
 
-**DDoS Attack Graph Demo** 是一個整合 AI 分析的 DDoS 攻擊圖表展示系統，同時包含完整的 Cloudflare 文檔爬蟲工具。
+**DDoS Attack Graph Demo** 是一個**純後端**的 API 服務系統，整合 AI 分析進行 DDoS 攻擊圖表分析，同時包含完整的 Cloudflare 文檔爬蟲工具。
+
+> ⚠️ **重要說明**: 此專案已重構為純後端架構，所有前端相關代碼已移除。此專案提供 RESTful API 介面供外部系統調用。
 
 ## 🎯 核心功能
 - 🔍 **AI 智能分析**: 整合多種 AI 提供商進行攻擊模式分析
@@ -2303,24 +2306,52 @@ tools/
 ```
 ddos-attack-graph-demo/
 ├── README.md                      # 本檔案 - 完整專案文檔
-├── backend/                       # 後端服務
-├── frontend/                      # 前端應用
+├── backend/                       # 後端 API 服務 (核心)
+│   ├── index.js                  # 後端主程式
+│   ├── config/                   # 配置檔案
+│   ├── services/                 # 服務模組
+│   └── _dev/                     # 開發工具
 ├── tools/                         # 工具歸檔目錄
 │   ├── archived-crawlers/         # 已完成的爬蟲工具
 │   └── one-time-scripts/          # 單次任務工具
 ├── cloudflare-docs/               # Cloudflare 文檔資料
 ├── waf-docs/                      # WAF 文檔資料
-└── docs-archive/                  # 文檔備份
+├── docs-archive/                  # 文檔備份
+├── run.sh                         # 後端啟動腳本
+└── cloudflare-staged-crawler.js   # Cloudflare 文檔爬蟲
 ```
 
 ## 🚀 快速開始
+
+### 啟動後端服務
 ```bash
-# 啟動專案
+# 方式 1: 使用啟動腳本
 ./run.sh
 
-# 執行文檔爬蟲
+# 方式 2: 直接啟動
+cd backend
+node index.js
+
+# 方式 3: 使用重啟腳本
+cd backend
+./restart.sh
+```
+
+### 後端服務會在以下地址啟動
+- **API 端點**: `http://localhost:8080`
+- **健康檢查**: `http://localhost:8080/`
+
+### 執行文檔爬蟲
+```bash
 ./run-staged-crawler.sh [product-line]
 ```
+
+### 📡 API 使用
+此專案提供 RESTful API 介面，可以透過 HTTP 請求調用各項功能：
+- **攻擊分析**: POST `/api/analyze`
+- **趨勢分析**: POST `/api/trend-analysis`
+- **資料匯出**: POST `/api/export`
+- 更多 API 詳見 `backend/index.js`
 
 ---
 

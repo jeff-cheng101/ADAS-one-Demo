@@ -53,9 +53,10 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false
 }));
 
-// CORS配置
+// CORS配置 - 純後端模式：允許所有來源
+const corsOrigins = securityConfig.app.corsOrigins.includes('*') ? true : securityConfig.app.corsOrigins;
 app.use(cors({
-  origin: securityConfig.app.corsOrigins,
+  origin: corsOrigins,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']

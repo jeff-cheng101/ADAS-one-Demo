@@ -10,9 +10,7 @@
 # 配置參數
 PROJECT_NAME="DDoS攻擊圖表分析系統"
 BACKEND_SERVICE="node index.js"
-FRONTEND_DIR="../frontend"
 BACKEND_PORT="8080"
-FRONTEND_PORT="3000"
 LOG_FILE="startup.log"
 HEALTH_CHECK_URL="http://localhost:$BACKEND_PORT"
 
@@ -118,39 +116,6 @@ start_backend() {
     fi
 }
 
-# 管理前端服務
-manage_frontend() {
-    local action=$1
-    
-    if [ "$action" = "restart" ]; then
-        log_info "重啟前端服務..."
-        
-        # 停止前端
-        if check_port $FRONTEND_PORT; then
-            log_info "停止前端服務..."
-            lsof -ti:$FRONTEND_PORT | xargs kill -9 2>/dev/null
-            sleep 2
-        fi
-        
-        # 啟動前端
-        if [ -d "$FRONTEND_DIR" ]; then
-            log_info "啟動前端服務..."
-            cd "$FRONTEND_DIR"
-            npm start > frontend.log 2>&1 &
-            cd - > /dev/null
-            sleep 3
-            
-            if check_port $FRONTEND_PORT; then
-                log_success "前端服務啟動成功！(端口: $FRONTEND_PORT)"
-            else
-                log_warning "前端服務可能啟動失敗，請檢查 $FRONTEND_DIR/frontend.log"
-            fi
-        else
-            log_warning "前端目錄不存在：$FRONTEND_DIR"
-        fi
-    fi
-}
-
 # 顯示服務狀態
 show_status() {
     echo ""
@@ -164,13 +129,6 @@ show_status() {
         log_error "後端服務：未運行"
     fi
     
-    # 前端狀態
-    if check_port $FRONTEND_PORT; then
-        log_success "前端服務：運行中 (端口: $FRONTEND_PORT)"
-    else
-        log_warning "前端服務：未運行"
-    fi
-    
     # ELK連接狀態
     if grep -q "✅ ELK" "$LOG_FILE" 2>/dev/null; then
         log_success "ELK連接：正常"
@@ -181,9 +139,7 @@ show_status() {
     echo ""
     log_info "=== 快速操作 ==="
     echo "📋 查看後端日誌: tail -f $LOG_FILE"
-    echo "📋 查看前端日誌: tail -f $FRONTEND_DIR/frontend.log"
     echo "🌐 後端地址: http://localhost:$BACKEND_PORT"
-    echo "🌐 前端地址: http://localhost:$FRONTEND_PORT"
     echo ""
 }
 
@@ -209,32 +165,13 @@ main() {
             fi
             ;;
             
-        "full"|"all")
-            log_info "重啟所有服務..."
-            stop_backend
-            start_backend
-            
-            if [ $? -eq 0 ]; then
-                manage_frontend restart
-                health_check
-                show_status
-            else
-                log_error "服務重啟失敗"
-                exit 1
-            fi
-            ;;
-            
         "status")
             show_status
             ;;
             
         "stop")
-            log_info "停止所有服務..."
+            log_info "停止後端服務..."
             stop_backend
-            if check_port $FRONTEND_PORT; then
-                lsof -ti:$FRONTEND_PORT | xargs kill -9 2>/dev/null
-                log_success "前端服務已停止"
-            fi
             ;;
             
         "help"|"-h"|"--help")
@@ -242,15 +179,13 @@ main() {
             echo "  ./restart.sh [選項]"
             echo ""
             echo "選項："
-            echo "  backend, (空)  - 只重啟後端服務 (默認)"
-            echo "  full, all      - 重啟所有服務(前端+後端)"
+            echo "  backend, (空)  - 重啟後端服務 (默認)"
             echo "  status         - 顯示服務狀態"
-            echo "  stop           - 停止所有服務"
+            echo "  stop           - 停止後端服務"
             echo "  help           - 顯示此幫助信息"
             echo ""
             echo "範例："
             echo "  ./restart.sh           # 重啟後端"
-            echo "  ./restart.sh full      # 重啟所有服務"
             echo "  ./restart.sh status    # 查看狀態"
             ;;
             

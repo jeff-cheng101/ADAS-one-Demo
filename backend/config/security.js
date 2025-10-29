@@ -12,7 +12,8 @@ const SECURITY_CONFIG = {
   app: {
     secret: process.env.APP_SECRET || 'default_secret_change_in_production',
     jwtSecret: process.env.JWT_SECRET || 'default_jwt_secret_change_in_production',
-    corsOrigins: process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',') : ['http://localhost:3000']
+    // 純後端模式：允許所有來源。如需限制請通過環境變數 CORS_ORIGINS 設定
+    corsOrigins: process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',') : ['*']
   },
   
   // 速率限制
