@@ -1,20 +1,41 @@
 // ELK 連接配置檔案
 // 包含 MCP 連接設定、OWASP 參考連結和預設配置
 
+const path = require('path');
+
+// 跨平台路徑處理函數
+function getProxyCommand() {
+  // 優先使用環境變數
+  if (process.env.ELK_MCP_PROXY_COMMAND) {
+    return process.env.ELK_MCP_PROXY_COMMAND;
+  }
+  
+  // 跨平台主目錄路徑
+  const homeDir = process.env.HOME || process.env.USERPROFILE || process.env.HOMEPATH || '';
+  
+  if (!homeDir) {
+    console.warn('⚠️ 無法確定主目錄路徑，請設置 ELK_MCP_PROXY_COMMAND 環境變數');
+    return 'mcp-proxy'; // 回退到系統 PATH
+  }
+  
+  // 使用 path.join 確保跨平台兼容性
+  return path.join(homeDir, '.local', 'bin', 'mcp-proxy');
+}
+
 const ELK_CONFIG = {
   // MCP 連接配置
   mcp: {
     // HTTP MCP Server URL（您的 MCP 服務位址）
-    serverUrl: process.env.ELK_MCP_SERVER_URL || 'http://10.168.10.250:8080',
+    serverUrl: process.env.ELK_MCP_SERVER_URL || 'http://127.0.0.1:8080',
     
-    // 協議類型：'proxy' 使用 mcp-proxy 橋接, 'stdio' 直接使用 stdio
-    protocol: process.env.ELK_MCP_PROTOCOL || 'proxy',
+    // 協議類型：'proxy' 使用 mcp-proxy 橋接, 'http' 直接使用 HTTP, 'stdio' 直接使用 stdio
+    protocol: process.env.ELK_MCP_PROTOCOL || 'http', // 預設改為 http，更適合 Windows
     
-    // mcp-proxy 模式配置（推薦）
-    proxyCommand: process.env.HOME + '/.local/bin/mcp-proxy',
+    // mcp-proxy 模式配置（推薦用於 Linux/Mac）
+    proxyCommand: getProxyCommand(),
     proxyArgs: [
       '--transport=streamablehttp',
-      `http://10.168.10.250:8080/mcp`
+      process.env.ELK_MCP_PROXY_URL || `${process.env.ELK_MCP_SERVER_URL || 'http://127.0.0.1:8080'}/mcp`
     ],
     
     // stdio 模式配置（備用）

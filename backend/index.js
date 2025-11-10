@@ -1,4 +1,7 @@
 // backend/index.js
+// 必須在最開頭載入 dotenv，確保環境變數在所有模組載入前就被讀取
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -2566,7 +2569,7 @@ async function warmupELKConnection() {
 }
 
 // 啟動服務
-const port = 8080;
+const port = process.env.PORT || 8080;
 app.listen(port, async () => {
   console.log(`🚀 Backend API 已啟動: http://localhost:${port}`);
   console.log('📊 DDoS 攻擊圖表分析系統已就緒');

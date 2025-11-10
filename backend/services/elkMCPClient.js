@@ -5,6 +5,8 @@ const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
 const { SSEClientTransport } = require('@modelcontextprotocol/sdk/client/sse.js');
 const { spawn } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 const { ELK_CONFIG } = require('../config/elkConfig');
 const { CLOUDFLARE_FIELD_MAPPING } = require('../../cloudflare-field-mapping');
 
@@ -92,22 +94,46 @@ class ElkMCPClient {
   // 測試 HTTP 連接
   async testHttpConnection() {
     try {
-      const pingUrl = `${ELK_CONFIG.mcp.serverUrl}/ping`;
-      console.log(`測試 MCP Server 連接: ${pingUrl}`);
+      // 嘗試多個可能的端點
+      const testUrls = [
+        `${ELK_CONFIG.mcp.serverUrl}/ping`,
+        `${ELK_CONFIG.mcp.serverUrl}/mcp`,
+        `${ELK_CONFIG.mcp.serverUrl}/`
+      ];
       
-      const response = await fetch(pingUrl, {
-        method: 'GET',
-        timeout: 5000
-      });
+      let lastError = null;
       
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      for (const testUrl of testUrls) {
+        try {
+          console.log(`測試 MCP Server 連接: ${testUrl}`);
+          
+          const response = await fetch(testUrl, {
+            method: 'GET',
+            signal: AbortSignal.timeout(5000)
+          });
+          
+          // 即使返回錯誤狀態碼，也說明服務器是可達的
+          if (response.status < 500) {
+            console.log(`✅ MCP Server HTTP 連接測試成功 (${testUrl})`);
+            return true;
+          }
+          
+          lastError = new Error(`HTTP ${response.status}: ${response.statusText}`);
+        } catch (error) {
+          lastError = error;
+          // 繼續嘗試下一個 URL
+          continue;
+        }
       }
       
-      console.log('✅ MCP Server HTTP 連接測試成功');
-      return true;
+      // 如果所有 URL 都失敗，拋出最後一個錯誤
+      throw lastError || new Error('無法連接到 MCP Server');
     } catch (error) {
       console.error('❌ MCP Server HTTP 連接測試失敗:', error.message);
+      // 如果是超時或連接錯誤，提供更詳細的錯誤訊息
+      if (error.name === 'TimeoutError' || error.message.includes('ECONNREFUSED')) {
+        throw new Error(`無法連接到 MCP Server (${ELK_CONFIG.mcp.serverUrl})，請確認服務器正在運行`);
+      }
       throw new Error(`無法連接到 MCP Server: ${error.message}`);
     }
   }
@@ -242,6 +268,24 @@ class ElkMCPClient {
         console.log(`正在連接 ELK MCP Server (${ELK_CONFIG.mcp.protocol})...`);
         console.log(`Server URL: ${ELK_CONFIG.mcp.serverUrl}`);
         
+        // HTTP 協議：直接使用 HTTP 調用，不需要 MCP 客戶端連接
+        if (ELK_CONFIG.mcp.protocol === 'http') {
+          console.log('使用 HTTP 協議直接連接...');
+          
+          // 測試 HTTP 連接
+          await this.testHttpConnection();
+          
+          // 建立 HTTP 會話
+          await this.createHttpSession();
+          
+          this.connected = true;
+          this.retryCount = 0;
+          this.client = null; // HTTP 模式不需要 MCP 客戶端
+          
+          console.log('✅ ELK MCP Server HTTP 連接成功');
+          return true;
+        }
+        
         // 清理舊連接
         if (this.client) {
           try {
@@ -258,10 +302,104 @@ class ElkMCPClient {
         if (ELK_CONFIG.mcp.protocol === 'proxy') {
           // 使用 mcp-proxy 橋接 HTTP 到 stdio
           console.log('使用 mcp-proxy 橋接到 HTTP MCP Server...');
-          transport = new StdioClientTransport({
-            command: ELK_CONFIG.mcp.proxyCommand,
-            args: ELK_CONFIG.mcp.proxyArgs
-          });
+          
+          // 檢查 mcp-proxy 是否存在
+          const proxyCommand = ELK_CONFIG.mcp.proxyCommand;
+          const proxyPath = path.isAbsolute(proxyCommand) ? proxyCommand : proxyCommand;
+          
+          try {
+            // 檢查文件是否存在（Windows 需要檢查 .exe 擴展名）
+            const possiblePaths = [
+              proxyPath,
+              proxyPath + '.exe',
+              proxyPath + '.cmd',
+              proxyPath + '.bat'
+            ];
+            
+            let foundPath = null;
+            for (const testPath of possiblePaths) {
+              try {
+                if (fs.existsSync(testPath)) {
+                  foundPath = testPath;
+                  break;
+                }
+              } catch (e) {
+                // 繼續檢查下一個路徑
+              }
+            }
+            
+            // 如果找不到文件，嘗試在系統 PATH 中查找
+            if (!foundPath) {
+              // 在 Windows 上，嘗試使用 where 命令查找
+              const { execSync } = require('child_process');
+              try {
+                const commandName = path.basename(proxyPath).replace(/\.(exe|cmd|bat)$/, '');
+                if (process.platform === 'win32') {
+                  const whereResult = execSync(`where ${commandName}`, { encoding: 'utf8', stdio: 'pipe' });
+                  if (whereResult.trim()) {
+                    foundPath = whereResult.trim().split('\n')[0];
+                    console.log(`✅ 在系統 PATH 中找到 mcp-proxy: ${foundPath}`);
+                  }
+                } else {
+                  const whichResult = execSync(`which ${commandName}`, { encoding: 'utf8', stdio: 'pipe' });
+                  if (whichResult.trim()) {
+                    foundPath = whichResult.trim();
+                    console.log(`✅ 在系統 PATH 中找到 mcp-proxy: ${foundPath}`);
+                  }
+                }
+              } catch (e) {
+                // where/which 命令失敗，繼續使用原始路徑
+              }
+            }
+            
+            if (!foundPath) {
+              // 自動回退到 HTTP 協議
+              console.warn(`⚠️ 找不到 mcp-proxy 工具 (${proxyPath})`);
+              console.log(`🔄 自動切換到 HTTP 協議...`);
+              
+              // 直接執行 HTTP 連接邏輯（避免遞歸）
+              try {
+                // 測試 HTTP 連接
+                await this.testHttpConnection();
+                
+                // 建立 HTTP 會話
+                await this.createHttpSession();
+                
+                this.connected = true;
+                this.retryCount = 0;
+                this.client = null; // HTTP 模式不需要 MCP 客戶端
+                
+                console.log('✅ ELK MCP Server HTTP 連接成功（自動回退）');
+                return true;
+              } catch (httpError) {
+                const errorMsg = `❌ 無法使用 proxy 協議（mcp-proxy 不存在），且 HTTP 協議也失敗\n` +
+                  `   Proxy 錯誤: mcp-proxy 工具不存在於 ${proxyPath}\n` +
+                  `   HTTP 錯誤: ${httpError.message}\n` +
+                  `   建議解決方案:\n` +
+                  `   1. 安裝 mcp-proxy 工具並設置 ELK_MCP_PROXY_COMMAND\n` +
+                  `   2. 或確保 MCP Server 在 ${ELK_CONFIG.mcp.serverUrl} 運行\n` +
+                  `   3. 或設置環境變數 ELK_MCP_PROTOCOL=http 直接使用 HTTP 協議`;
+                throw new Error(errorMsg);
+              }
+            }
+            
+            // 使用找到的路徑
+            transport = new StdioClientTransport({
+              command: foundPath,
+              args: ELK_CONFIG.mcp.proxyArgs
+            });
+          } catch (error) {
+            // 如果檢查失敗，提供更詳細的錯誤訊息
+            if (error.message.includes('mcp-proxy 工具不存在')) {
+              throw error;
+            }
+            // 其他錯誤，嘗試繼續但會記錄警告
+            console.warn(`⚠️ 無法驗證 mcp-proxy 路徑，嘗試繼續: ${error.message}`);
+            transport = new StdioClientTransport({
+              command: proxyCommand,
+              args: ELK_CONFIG.mcp.proxyArgs
+            });
+          }
         } else {
           // 直接 stdio 傳輸
           transport = new StdioClientTransport({
@@ -281,6 +419,7 @@ class ElkMCPClient {
         });
 
         // 設置連接超時
+        console.log(`RYCHENGA connectPromise: ${JSON.stringify(transport)}`);
         const connectPromise = this.client.connect(transport);
         const timeoutPromise = new Promise((_, reject) => 
           setTimeout(() => reject(new Error('Connection timeout')), 15000)
