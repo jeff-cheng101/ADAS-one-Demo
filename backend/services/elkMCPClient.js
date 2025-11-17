@@ -35,48 +35,49 @@ class ElkMCPClient {
   // 建立 HTTP MCP 會話
   async createHttpSession() {
     try {
-      const sessionUrl = `${ELK_CONFIG.mcp.serverUrl}/mcp`;
-      console.log('建立 MCP 會話...');
+      // HTTP 模式的 MCP Server 可能不需要 initialize 會話
+      // 嘗試直接調用工具列表來驗證連接
+      const mcpUrl = `${ELK_CONFIG.mcp.serverUrl}/mcp`;
+      console.log('驗證 MCP Server 連接...');
       
-      // 發送初始化請求建立會話
-      const response = await fetch(sessionUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          method: 'initialize',
-          id: 1,
-          params: {
-            protocolVersion: '2024-11-05',
-            capabilities: {
-              tools: {}
-            },
-            clientInfo: {
-              name: 'ddos-analyzer',
-              version: '1.0.0'
-            }
-          }
-        })
-      });
-      
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      // 嘗試獲取工具列表來驗證連接（不建立正式會話）
+      try {
+        const response = await fetch(mcpUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json, text/event-stream'
+          },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            method: 'tools/list',
+            id: 1
+          })
+        });
+        
+        if (response.ok) {
+          const result = await response.json();
+          console.log('✅ MCP Server 連接驗證成功');
+          this.sessionId = 'http-session';
+          this.serverCapabilities = result.result?.capabilities || {};
+          return true;
+        } else {
+          // 其他錯誤，跳過會話建立，直接使用工具調用
+          console.log(`⚠️ 會話建立返回 ${response.status}，跳過會話建立`);
+          this.sessionId = 'http-session';
+          return true;
+        }
+      } catch (testError) {
+        // 測試失敗，但繼續（可能服務器不需要會話）
+        console.log('⚠️ 會話測試失敗，但繼續使用 HTTP 模式:', testError.message);
+        this.sessionId = 'http-session';
+        return true;
       }
-      
-      const result = await response.json();
-      console.log('✅ MCP 會話建立成功');
-      
-      // 儲存會話資訊
-      this.sessionId = result.id || 'default';
-      this.serverCapabilities = result.result?.capabilities || {};
-      
-      return true;
     } catch (error) {
       console.error('❌ MCP 會話建立失敗:', error.message);
-      throw error;
+      // 即使失敗也繼續，因為 HTTP 模式可能不需要會話
+      this.sessionId = 'http-session';
+      return true;
     }
   }
 
@@ -111,30 +112,96 @@ class ElkMCPClient {
       
       // 使用 MCP JSON-RPC 格式
       const requestId = Date.now();
+      
+      // 設置正確的 Accept 頭（服務器要求同時接受 application/json 和 text/event-stream）
+      const headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream'
+      };
+      
+      // 使用配置中的超時時間，預設為 4 分鐘（240000ms）以適應大數據量查詢
+      const timeout = ELK_CONFIG.mcp.timeout || 240000;
+      console.log(`⏱️  請求超時設置: ${timeout / 1000} 秒`);
+      
+      // 構建 MCP JSON-RPC 請求體（確保格式正確）
+      const requestBody = {
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        id: requestId,
+        params: {
+          name: toolName,
+          arguments: args
+        }
+      };
+      
+      // 調試：輸出實際發送的請求體
+      console.log('📤 發送 MCP 請求體:', JSON.stringify(requestBody, null, 2));
+      
       const response = await fetch(mcpUrl, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          method: 'tools/call',
-          id: requestId,
-          params: {
-            name: toolName,
-            arguments: args
-          }
-        }),
-        // 增加超時時間到60秒，適應大數據量查詢
-        signal: AbortSignal.timeout(60000)
+        headers: headers,
+        body: JSON.stringify(requestBody),
+        signal: AbortSignal.timeout(timeout)
       });
       
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        const errorText = await response.text().catch(() => '');
+        throw new Error(`HTTP ${response.status}: ${response.statusText}${errorText ? ` - ${errorText.substring(0, 200)}` : ''}`);
       }
       
-      const result = await response.json();
+      // 檢查回應類型：可能是 JSON 或 SSE (text/event-stream)
+      const contentType = response.headers.get('content-type') || '';
+      let result;
+      
+      if (contentType.includes('text/event-stream')) {
+        // 處理 SSE 格式回應
+        console.log('📥 收到 SSE 格式回應，正在解析...');
+        const text = await response.text();
+        console.log('📥 SSE 回應原始內容 (前 500 字元):', text.substring(0, 500));
+        
+        // SSE 格式：每行以 "data: " 開頭，後面是 JSON
+        // 提取所有 "data: " 後面的 JSON 內容
+        const lines = text.split('\n');
+        let jsonData = null;
+        
+        for (const line of lines) {
+          const trimmedLine = line.trim();
+          if (trimmedLine.startsWith('data: ')) {
+            try {
+              const jsonStr = trimmedLine.substring(6); // 移除 "data: " 前綴
+              jsonData = JSON.parse(jsonStr);
+              console.log('✅ 成功解析 SSE 中的 JSON 數據');
+              break; // 找到第一個有效的 JSON 就停止
+            } catch (e) {
+              console.warn('⚠️  解析 SSE 行失敗:', trimmedLine.substring(0, 100));
+            }
+          } else if (trimmedLine.startsWith('{') && !jsonData) {
+            // 有些 SSE 回應可能直接是 JSON，沒有 "data: " 前綴
+            try {
+              jsonData = JSON.parse(trimmedLine);
+              console.log('✅ 成功解析 SSE 中的直接 JSON 數據');
+              break;
+            } catch (e) {
+              // 繼續嘗試下一行
+            }
+          }
+        }
+        
+        if (!jsonData) {
+          // 如果沒有找到 "data: " 格式，嘗試直接解析整個回應
+          try {
+            jsonData = JSON.parse(text);
+            console.log('✅ 成功直接解析回應為 JSON');
+          } catch (e) {
+            throw new Error(`無法解析 SSE 回應: ${e.message}。回應內容: ${text.substring(0, 200)}`);
+          }
+        }
+        
+        result = jsonData;
+      } else {
+        // 標準 JSON 回應
+        result = await response.json();
+      }
       
       if (result.error) {
         throw new Error(`MCP Error: ${result.error.message}`);
@@ -155,11 +222,13 @@ class ElkMCPClient {
         console.log('獲取 MCP 工具列表...');
         
         const requestId = Date.now();
+        
+        // 設置正確的 Accept 頭（服務器要求同時接受 application/json 和 text/event-stream）
         const response = await fetch(mcpUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Accept': 'application/json'
+            'Accept': 'application/json, text/event-stream'
           },
           body: JSON.stringify({
             jsonrpc: '2.0',
@@ -224,70 +293,155 @@ class ElkMCPClient {
           this.client = null;
         }
         
-        let transport;
-        
         // 根據協議類型建立不同的傳輸方式
-        if (ELK_CONFIG.mcp.protocol === 'proxy') {
+        if (ELK_CONFIG.mcp.protocol === 'http') {
+          // HTTP 模式：直接使用 HTTP 請求，不需要 MCP 客戶端
+          console.log('使用 HTTP 模式連接到 MCP Server...');
+          await this.createHttpTransport();
+          this.connected = true;
+          this.retryCount = 0;
+          console.log('✅ ELK MCP Server HTTP 連接成功');
+          return true;
+        } else if (ELK_CONFIG.mcp.protocol === 'proxy') {
           // 使用 mcp-proxy 橋接 HTTP 到 stdio
           console.log('使用 mcp-proxy 橋接到 HTTP MCP Server...');
           console.log(`mcp-proxy 路徑: ${ELK_CONFIG.mcp.proxyCommand}`);
           console.log(`mcp-proxy 參數: ${ELK_CONFIG.mcp.proxyArgs.join(' ')}`);
           
-          // 檢查 mcp-proxy 是否存在
+          // 跨平台檢查 mcp-proxy 是否存在
           const fs = require('fs');
-          if (!fs.existsSync(ELK_CONFIG.mcp.proxyCommand)) {
+          const path = require('path');
+          const { execSync } = require('child_process');
+          
+          let proxyPath = ELK_CONFIG.mcp.proxyCommand;
+          let proxyExists = false;
+          
+          // 如果是相對路徑或命令名稱，嘗試在 PATH 中查找
+          if (!path.isAbsolute(proxyPath) || !fs.existsSync(proxyPath)) {
+            try {
+              // 嘗試使用 which/where 命令查找
+              const whichCommand = process.platform === 'win32' ? 'where' : 'which';
+              const foundPath = execSync(`${whichCommand} ${path.basename(proxyPath)}`, { 
+                encoding: 'utf8',
+                stdio: ['pipe', 'pipe', 'ignore']
+              }).trim().split('\n')[0];
+              
+              if (foundPath && fs.existsSync(foundPath)) {
+                proxyPath = foundPath;
+                proxyExists = true;
+              }
+            } catch (e) {
+              // which/where 命令失敗，繼續檢查其他路徑
+            }
+          } else {
+            proxyExists = fs.existsSync(proxyPath);
+          }
+          
+          // 如果還是找不到，嘗試 Windows 常見路徑
+          if (!proxyExists && process.platform === 'win32') {
+            const os = require('os');
+            const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+            const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+            const possiblePaths = [
+              path.join(localAppData, 'npm', 'mcp-proxy.cmd'),
+              path.join(appData, 'npm', 'mcp-proxy.cmd'),
+              path.join(localAppData, 'npm', 'mcp-proxy'),
+              path.join(appData, 'npm', 'mcp-proxy')
+            ];
+            
+            for (const possiblePath of possiblePaths) {
+              if (fs.existsSync(possiblePath)) {
+                proxyPath = possiblePath;
+                proxyExists = true;
+                break;
+              }
+            }
+          }
+          
+          if (!proxyExists) {
             throw new Error(
               `mcp-proxy 不存在於路徑: ${ELK_CONFIG.mcp.proxyCommand}\n` +
-              `請確認：\n` +
-              `1. mcp-proxy 已正確安裝\n` +
+              `已嘗試查找但未找到。請確認：\n` +
+              `1. mcp-proxy 已正確安裝（npm install -g mcp-proxy 或 pipx install mcp-proxy）\n` +
               `2. 路徑正確（當前 PATH: ${process.env.PATH}）\n` +
-              `3. 不使用 sudo/root 身份運行後端\n` +
-              `4. 或在 .env 中設定 ELK_MCP_PROTOCOL=http 使用 HTTP 模式`
+              `3. 或在 .env 中設定 ELK_MCP_PROTOCOL=http 使用 HTTP 模式（推薦）\n` +
+              `4. 或在 .env 中設定 MCP_PROXY_PATH=完整路徑 指定 mcp-proxy 位置`
             );
           }
           
-          transport = new StdioClientTransport({
-            command: ELK_CONFIG.mcp.proxyCommand,
+          const transport = new StdioClientTransport({
+            command: proxyPath,
             args: ELK_CONFIG.mcp.proxyArgs
           });
+
+          // 建立客戶端
+          this.client = new Client({
+            name: "ddos-analyzer",
+            version: "1.0.0"
+          }, {
+            capabilities: {
+              tools: {}
+            }
+          });
+
+          // 設置連接超時
+          const connectPromise = this.client.connect(transport);
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Connection timeout')), 15000)
+          );
+          
+          // 連接到服務器（帶超時）
+          await Promise.race([connectPromise, timeoutPromise]);
+          
+          // 驗證連接是否真的可用
+          const testResult = await this.quickConnectionTest();
+          if (!testResult) {
+            throw new Error('Connection established but not functional');
+          }
+          
+          this.connected = true;
+          this.retryCount = 0;
+          
+          console.log('✅ ELK MCP Server 連接成功並通過驗證');
+          return true;
         } else {
           // 直接 stdio 傳輸
-          transport = new StdioClientTransport({
+          const transport = new StdioClientTransport({
             command: ELK_CONFIG.mcp.serverCommand,
             args: ELK_CONFIG.mcp.serverArgs
           });
-        }
 
-        // 建立客戶端
-        this.client = new Client({
-          name: "ddos-analyzer",
-          version: "1.0.0"
-        }, {
-          capabilities: {
-            tools: {}
+          // 建立客戶端
+          this.client = new Client({
+            name: "ddos-analyzer",
+            version: "1.0.0"
+          }, {
+            capabilities: {
+              tools: {}
+            }
+          });
+
+          // 設置連接超時
+          const connectPromise = this.client.connect(transport);
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Connection timeout')), 15000)
+          );
+          
+          // 連接到服務器（帶超時）
+          await Promise.race([connectPromise, timeoutPromise]);
+          
+          // 驗證連接是否真的可用
+          const testResult = await this.quickConnectionTest();
+          if (!testResult) {
+            throw new Error('Connection established but not functional');
           }
-        });
-
-        // 設置連接超時
-        const connectPromise = this.client.connect(transport);
-        const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Connection timeout')), 15000)
-        );
-        
-        // 連接到服務器（帶超時）
-        await Promise.race([connectPromise, timeoutPromise]);
-        
-        // 驗證連接是否真的可用
-        const testResult = await this.quickConnectionTest();
-        if (!testResult) {
-          throw new Error('Connection established but not functional');
+          
+          this.connected = true;
+          this.retryCount = 0;
+          
+          console.log('✅ ELK MCP Server 連接成功並通過驗證');
+          return true;
         }
-        
-        this.connected = true;
-        this.retryCount = 0;
-        
-        console.log('✅ ELK MCP Server 連接成功並通過驗證');
-        return true;
         
       } catch (error) {
         console.error(`❌ ELK MCP Server 連接失敗 (嘗試 ${attempt + 1}/${maxRetries + 1}):`, error.message);
@@ -319,6 +473,25 @@ class ElkMCPClient {
 
   // 確保連接狀態
   async ensureConnection() {
+    // HTTP 模式：只需要驗證 HTTP 連接
+    if (ELK_CONFIG.mcp.protocol === 'http') {
+      if (!this.connected) {
+        console.log('🔄 ELK HTTP 連接未建立，開始建立連接...');
+        await this.connect();
+      } else {
+        // 驗證 HTTP 連接是否可用
+        try {
+          await this.testHttpConnection();
+        } catch (error) {
+          console.log('⚠️ ELK HTTP 連接驗證失敗，重新建立連接...', error.message);
+          this.connected = false;
+          await this.connect();
+        }
+      }
+      return;
+    }
+    
+    // stdio/proxy 模式：需要 MCP 客戶端
     if (!this.connected || !this.client) {
       console.log('🔄 ELK 連接未建立，開始建立連接...');
       await this.connect();
@@ -343,6 +516,16 @@ class ElkMCPClient {
 
   // 快速連接測試（不會拋出錯誤）
   async quickConnectionTest() {
+    // HTTP 模式不需要 client，直接測試 HTTP 連接
+    if (ELK_CONFIG.mcp.protocol === 'http') {
+      try {
+        await this.testHttpConnection();
+        return true;
+      } catch (error) {
+        return false;
+      }
+    }
+    
     if (!this.client) {
       return false;
     }
@@ -431,10 +614,13 @@ class ElkMCPClient {
           }
         };
       } else if (query.query.range) {
+        // 保持 range 查詢結構，但包裝在 bool 查詢中以支援額外的 filter
         const rangeQuery = query.query.range;
         query.query = {
           bool: {
-            must: [{ range: rangeQuery }],
+            must: [{
+              range: rangeQuery
+            }],
             filter: []
           }
         };
@@ -502,15 +688,59 @@ class ElkMCPClient {
       console.log('篩選條件:', filters);
       console.log('索引:', ELK_CONFIG.elasticsearch.index);
       console.log('查詢內容:', JSON.stringify(query, null, 2));
-
-      // 使用 MCP 工具執行查詢
-      const result = await this.client.callTool({
-        name: 'search',
-        arguments: {
-          index: ELK_CONFIG.elasticsearch.index,
-          query_body: query
+      
+      // 驗證索引名稱格式
+      let indexName = ELK_CONFIG.elasticsearch.index;
+      if (!indexName || indexName.trim() === '') {
+        throw new Error('索引名稱不能為空，請檢查 ELK_INDEX 環境變數');
+      }
+      
+      // 清理索引名稱（移除多餘空格，確保格式正確）
+      indexName = indexName.trim();
+      
+      // 驗證索引名稱格式（應該包含連字符和通配符）
+      if (!indexName.includes('logpush') && indexName.includes('adasone-cf')) {
+        console.warn('⚠️  索引名稱可能不完整，預期格式: adasone-cf-logpush-*');
+        console.warn('⚠️  當前索引名稱:', indexName);
+        // 嘗試自動修正
+        if (indexName === 'adasone-cf*' || indexName === 'adasone-cf-*') {
+          indexName = 'adasone-cf-logpush-*';
+          console.log('✅ 已自動修正索引名稱為:', indexName);
         }
-      });
+      }
+      
+      console.log('✅ 使用索引名稱:', indexName);
+
+      // 根據協議類型選擇不同的調用方式
+      let result;
+      if (ELK_CONFIG.mcp.protocol === 'http') {
+        // HTTP 模式：直接使用 HTTP 調用
+        const searchArgs = {
+          index: indexName,
+          query_body: query
+        };
+        console.log('🔍 發送 MCP 工具調用參數:', JSON.stringify(searchArgs, null, 2));
+        result = await this.callHttpTool('search', searchArgs);
+        
+        // 將 HTTP 回應轉換為 MCP 格式
+        result = {
+          isError: false,
+          content: [
+            { type: 'text', text: JSON.stringify(result) }
+          ]
+        };
+      } else {
+        // stdio/proxy 模式：使用 MCP 客戶端
+        const searchArgs = {
+          index: indexName,
+          query_body: query
+        };
+        console.log('🔍 發送 MCP 工具調用參數 (stdio/proxy):', JSON.stringify(searchArgs, null, 2));
+        result = await this.client.callTool({
+          name: 'search',
+          arguments: searchArgs
+        });
+      }
 
       if (result.isError) {
         throw new Error(`Elasticsearch 查詢錯誤: ${result.content[0]?.text || 'Unknown error'}`);
@@ -606,13 +836,18 @@ class ElkMCPClient {
     await this.ensureConnection();
 
     try {
+      // 將時間範圍轉換為 ISO 8601 格式（不使用相對時間格式）
+      const now = new Date();
+      const timeRangeMs = this.parseTimeRange(timeRange);
+      const fromTime = new Date(now.getTime() - timeRangeMs);
+      
       // 建構聚合查詢
       const aggregationQuery = {
         query: {
           range: {
             "@timestamp": {
-              gte: `now-${timeRange}`,
-              lte: 'now'
+              gte: fromTime.toISOString(),
+              lte: now.toISOString()
             }
           }
         },
@@ -644,19 +879,76 @@ class ElkMCPClient {
         size: 0
       };
 
-      const result = await this.client.callTool({
-        name: 'elasticsearch_query',
-        arguments: {
-          index: ELK_CONFIG.elasticsearch.index,
-          query: JSON.stringify(aggregationQuery)
+      // 驗證索引名稱
+      let indexName = ELK_CONFIG.elasticsearch.index;
+      if (!indexName || indexName.trim() === '') {
+        throw new Error('索引名稱不能為空，請檢查 ELK_INDEX 環境變數');
+      }
+      
+      // 清理索引名稱（移除多餘空格，確保格式正確）
+      indexName = indexName.trim();
+      
+      // 驗證索引名稱格式（應該包含連字符和通配符）
+      if (!indexName.includes('logpush') && indexName.includes('adasone-cf')) {
+        console.warn('⚠️  索引名稱可能不完整，預期格式: adasone-cf-logpush-*');
+        console.warn('⚠️  當前索引名稱:', indexName);
+        // 嘗試自動修正
+        if (indexName === 'adasone-cf*' || indexName === 'adasone-cf-*') {
+          indexName = 'adasone-cf-logpush-*';
+          console.log('✅ 已自動修正索引名稱為:', indexName);
         }
-      });
+      }
+      
+      console.log('✅ 統計查詢使用索引名稱:', indexName);
+      console.log('📊 聚合查詢內容:', JSON.stringify(aggregationQuery, null, 2));
+
+      let result;
+      
+      if (ELK_CONFIG.mcp.protocol === 'http') {
+        // HTTP 模式：使用 callHttpTool
+        const searchArgs = {
+          index: indexName,
+          query_body: aggregationQuery
+        };
+        console.log('🔍 發送統計查詢 MCP 工具調用參數:', JSON.stringify(searchArgs, null, 2));
+        result = await this.callHttpTool('search', searchArgs);
+        
+        // 將 HTTP 回應轉換為 MCP 格式
+        result = {
+          isError: false,
+          content: [
+            { type: 'text', text: JSON.stringify(result) }
+          ]
+        };
+      } else {
+        // stdio/proxy 模式：使用 MCP 客戶端
+        const searchArgs = {
+          index: indexName,
+          query_body: aggregationQuery
+        };
+        console.log('🔍 發送統計查詢 MCP 工具調用參數 (stdio/proxy):', JSON.stringify(searchArgs, null, 2));
+        result = await this.client.callTool({
+          name: 'search',
+          arguments: searchArgs
+        });
+      }
 
       if (result.isError) {
         throw new Error(`統計查詢錯誤: ${result.content[0]?.text || 'Unknown error'}`);
       }
 
-      const responseData = JSON.parse(result.content[0]?.text || '{}');
+      // 處理回應
+      let responseData;
+      const responseText = result.content[0]?.text || '';
+      
+      try {
+        responseData = JSON.parse(responseText);
+      } catch (parseError) {
+        // 如果解析失敗，嘗試從其他 content 中獲取
+        const dataText = result.content[1]?.text || responseText;
+        responseData = JSON.parse(dataText);
+      }
+      
       return responseData.aggregations || {};
 
     } catch (error) {
@@ -667,6 +959,11 @@ class ElkMCPClient {
 
   // 檢查連接狀態
   isConnected() {
+    // HTTP 模式：只需要檢查 connected 狀態
+    if (ELK_CONFIG.mcp.protocol === 'http') {
+      return this.connected;
+    }
+    // stdio/proxy 模式：需要檢查 connected 和 client
     return this.connected && this.client;
   }
 

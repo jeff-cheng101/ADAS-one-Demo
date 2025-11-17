@@ -11,11 +11,42 @@ const ELK_CONFIG = {
     protocol: process.env.ELK_MCP_PROTOCOL || 'proxy',
     
     // mcp-proxy 模式配置（推薦）
-    // 修復：使用固定路徑，避免 HOME 環境變數在 root 環境下指向錯誤路徑
-    proxyCommand: process.env.MCP_PROXY_PATH || '/Users/peter/.local/bin/mcp-proxy',
+    // 跨平台路徑檢測：優先使用環境變數，否則根據平台自動檢測
+    proxyCommand: (() => {
+      // 優先使用環境變數
+      if (process.env.MCP_PROXY_PATH) {
+        return process.env.MCP_PROXY_PATH;
+      }
+      
+      // 跨平台路徑檢測
+      const os = require('os');
+      const path = require('path');
+      const platform = os.platform();
+      
+      if (platform === 'win32') {
+        // Windows: 檢查常見的安裝位置
+        const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+        const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+        
+        // 可能的 Windows 路徑
+        const possiblePaths = [
+          path.join(localAppData, 'npm', 'mcp-proxy.cmd'),
+          path.join(appData, 'npm', 'mcp-proxy.cmd'),
+          'mcp-proxy.cmd', // 如果在 PATH 中
+          'mcp-proxy' // 如果在 PATH 中（無擴展名）
+        ];
+        
+        // 返回第一個可能的路徑（實際檢查在 elkMCPClient.js 中進行）
+        return possiblePaths[0];
+      } else {
+        // Unix-like (Linux/macOS): 使用標準路徑
+        const home = os.homedir();
+        return path.join(home, '.local', 'bin', 'mcp-proxy');
+      }
+    })(),
     proxyArgs: [
       '--transport=streamablehttp',
-      `http://10.168.10.250:8080/mcp`
+      `${process.env.ELK_MCP_SERVER_URL || 'http://10.168.10.250:8080'}/mcp`
     ],
     
     // stdio 模式配置（備用）
@@ -28,7 +59,7 @@ const ELK_CONFIG = {
     ],
     
     // 連接配置
-    timeout: parseInt(process.env.ELK_MCP_TIMEOUT) || 30000,
+    timeout: parseInt(process.env.ELK_MCP_TIMEOUT) || 240000,  // 預設 4 分鐘，適應大數據量查詢
     retryAttempts: parseInt(process.env.ELK_MCP_RETRY) || 3
   },
 

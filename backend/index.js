@@ -1,4 +1,7 @@
  // backend/index.js
+// 載入環境變數
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
@@ -1679,7 +1682,7 @@ async function warmupELKConnection() {
 }
 
 // 啟動服務
-const port = 8080;
+const port = process.env.PORT || 8081;
 app.listen(port, async () => {
   console.log(`🚀 Backend API 已啟動: http://localhost:${port}`);
   console.log('📊 DDoS 攻擊圖表分析系統已就緒');
