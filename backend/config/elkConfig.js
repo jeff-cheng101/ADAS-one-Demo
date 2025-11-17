@@ -1,41 +1,21 @@
 // ELK 連接配置檔案
 // 包含 MCP 連接設定、OWASP 參考連結和預設配置
 
-const path = require('path');
-
-// 跨平台路徑處理函數
-function getProxyCommand() {
-  // 優先使用環境變數
-  if (process.env.ELK_MCP_PROXY_COMMAND) {
-    return process.env.ELK_MCP_PROXY_COMMAND;
-  }
-  
-  // 跨平台主目錄路徑
-  const homeDir = process.env.HOME || process.env.USERPROFILE || process.env.HOMEPATH || '';
-  
-  if (!homeDir) {
-    console.warn('⚠️ 無法確定主目錄路徑，請設置 ELK_MCP_PROXY_COMMAND 環境變數');
-    return 'mcp-proxy'; // 回退到系統 PATH
-  }
-  
-  // 使用 path.join 確保跨平台兼容性
-  return path.join(homeDir, '.local', 'bin', 'mcp-proxy');
-}
-
 const ELK_CONFIG = {
   // MCP 連接配置
   mcp: {
     // HTTP MCP Server URL（您的 MCP 服務位址）
-    serverUrl: process.env.ELK_MCP_SERVER_URL || 'http://127.0.0.1:8080',
+    serverUrl: process.env.ELK_MCP_SERVER_URL || 'http://10.168.10.250:8080',
     
-    // 協議類型：'proxy' 使用 mcp-proxy 橋接, 'http' 直接使用 HTTP, 'stdio' 直接使用 stdio
-    protocol: process.env.ELK_MCP_PROTOCOL || 'http', // 預設改為 http，更適合 Windows
+    // 協議類型：'proxy' 使用 mcp-proxy 橋接, 'stdio' 直接使用 stdio
+    protocol: process.env.ELK_MCP_PROTOCOL || 'proxy',
     
-    // mcp-proxy 模式配置（推薦用於 Linux/Mac）
-    proxyCommand: getProxyCommand(),
+    // mcp-proxy 模式配置（推薦）
+    // 修復：使用固定路徑，避免 HOME 環境變數在 root 環境下指向錯誤路徑
+    proxyCommand: process.env.MCP_PROXY_PATH || '/Users/peter/.local/bin/mcp-proxy',
     proxyArgs: [
       '--transport=streamablehttp',
-      process.env.ELK_MCP_PROXY_URL || `${process.env.ELK_MCP_SERVER_URL || 'http://127.0.0.1:8080'}/mcp`
+      `http://10.168.10.250:8080/mcp`
     ],
     
     // stdio 模式配置（備用）
@@ -48,7 +28,7 @@ const ELK_CONFIG = {
     ],
     
     // 連接配置
-    timeout: parseInt(process.env.ELK_MCP_TIMEOUT) || 240000,  // 4分鐘，適應月度查詢需求
+    timeout: parseInt(process.env.ELK_MCP_TIMEOUT) || 30000,
     retryAttempts: parseInt(process.env.ELK_MCP_RETRY) || 3
   },
 
@@ -143,59 +123,6 @@ const OWASP_REFERENCES = {
   }
 };
 
-// 攻擊路徑分類配置
-const ATTACK_PATH_CATEGORIES = {
-  'Environment Files': {
-    patterns: ['.env', '.config'],
-    description: '環境配置檔案，通常包含敏感資訊如資料庫密碼、API金鑰'
-  },
-  'Configuration Files': {
-    patterns: ['config', '.yml', '.xml'],
-    description: '系統配置檔案，可能暴露服務配置和敏感設定'
-  },
-  'Admin Panels': {
-    patterns: ['admin', 'wp-admin'],
-    description: '管理介面，攻擊者試圖獲取管理權限'
-  },
-  'Version Control': {
-    patterns: ['.git', '.svn'],
-    description: '版本控制系統檔案，可能洩露源碼和開發資訊'
-  },
-  'System Information': {
-    patterns: ['phpinfo', 'info.php'],
-    description: '系統資訊頁面，可能暴露伺服器配置詳情'
-  },
-  'API Configuration': {
-    patterns: ['firebase', 'api'],
-    description: 'API配置檔案，可能包含第三方服務金鑰'
-  },
-  'Script Files': {
-    patterns: ['.php', '.asp'],
-    description: '腳本檔案，攻擊者可能嘗試執行或探測漏洞'
-  },
-  'Database Access': {
-    patterns: ['phpmyadmin', 'adminer', '.sql'],
-    description: '資料庫管理工具或SQL檔案'
-  },
-  'Backup Files': {
-    patterns: ['.backup', '.bak', '.old', '.tmp'],
-    description: '備份檔案，可能包含敏感資料或舊版漏洞'
-  },
-  'Development Files': {
-    patterns: ['.log', 'debug', 'test', 'dev'],
-    description: '開發相關檔案，可能洩露開發資訊'
-  },
-  // 🆕 新增攻擊類型示例
-  'Container Escape': {
-    patterns: ['docker', 'kubernetes', 'k8s', '.kube', 'containerd', 'podman'],
-    description: '容器逃逸攻擊，試圖從容器環境逃脫到主機系統'
-  },
-  'AI/ML Models': {
-    patterns: ['.pkl', '.pt', '.pth', '.onnx', '.h5', '.pb', 'model', 'checkpoint'],
-    description: 'AI/ML 模型攻擊，針對機器學習模型檔案和訓練數據'
-  }
-};
-
 // 輔助函數：根據攻擊模式識別 OWASP 類型
 const identifyOWASPType = (uri, userAgent, securityRules) => {
   const detectedTypes = [];
@@ -218,7 +145,7 @@ const identifyOWASPType = (uri, userAgent, securityRules) => {
   }
   
   // 檢查 User Agent 模式
-  if (userAgent && typeof userAgent === 'string') {
+  if (userAgent) {
     const suspiciousAgents = ['sqlmap', 'nmap', 'nikto', 'dirb', 'gobuster', 'wfuzz'];
     for (const agent of suspiciousAgents) {
       if (userAgent.toLowerCase().includes(agent)) {
@@ -238,38 +165,9 @@ const identifyOWASPType = (uri, userAgent, securityRules) => {
   return detectedTypes;
 };
 
-// 配置驅動的攻擊路徑分類函數
-const categorizeAttackPathByConfig = (url) => {
-  if (!url) return 'Unknown';
-  
-  const path = url.toLowerCase();
-  
-  // 遍歷所有分類配置
-  for (const [category, config] of Object.entries(ATTACK_PATH_CATEGORIES)) {
-    // 檢查是否符合任何模式
-    for (const pattern of config.patterns) {
-      if (path.includes(pattern.toLowerCase())) {
-        return {
-          category: category,
-          description: config.description,
-          matchedPattern: pattern
-        };
-      }
-    }
-  }
-  
-  return {
-    category: 'Other',
-    description: '其他類型的攻擊路徑',
-    matchedPattern: null
-  };
-};
-
 // 匯出配置
 module.exports = {
   ELK_CONFIG,
   OWASP_REFERENCES,
-  identifyOWASPType,
-  ATTACK_PATH_CATEGORIES,
-  categorizeAttackPathByConfig
+  identifyOWASPType
 }; 

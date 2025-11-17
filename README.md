@@ -40,6 +40,22 @@
 - 🛡️ **安全防護**: 企業級安全配置和 API 保護
 - 📈 **趨勢分析**: 攻擊模式趨勢分析和預測
 
+## ✅ API 清單（Across-AI 相容）
+本後端現在僅暴露 Across-AI 定義的八個 REST 端點，保證前/後台行為一致：
+
+| 方法 | 路徑 | 功能 |
+| ---- | ---- | ---- |
+| GET | `/api/models` | 回傳 Gemini 2.5 系列可用模型列表 |
+| POST | `/api/analyze` | 呼叫 Gemini 進行攻擊/事件分析 |
+| POST | `/api/test-ai` | 測試 Gemini API Key 與模型設定 |
+| GET | `/api/elk/test-connection` | 檢查 ELK MCP 連線狀態 |
+| GET | `/api/elk/stats/:timeRange` | 取得指定時間範圍的 ELK 統計 |
+| GET | `/api/elk/stats` | 取得預設 1h 的 ELK 統計 |
+| GET | `/api/debug/time-grouping` | 了解時間分組的計算方式 |
+| POST | `/api/analyze-waf-risks-cloudflare` | 綜合 Cloudflare WAF 日誌輸出風險報告 |
+
+> ⚠️ **歷史端點已停用**：原本 ADAS 專屬的 Ollama 測試、趨勢對比、防護統計、AI 聊天、資料匯出等 API 及其模組已全面移除，請改用上述端點。
+
 ---
 
 # Cloudflare 文檔爬蟲系統
